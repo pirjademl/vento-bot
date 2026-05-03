@@ -54,50 +54,47 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Println(header)
 	switch header {
 	case "installation":
-		println("installation case is running ")
 		handler.DB.InsertInstallation(webhook)
-		//handler.DB.InsertRepository()
-		//CloneRepo(installationToken, webhook.Repository.Owner.Login, webhook.Repository.Name)
-		break
+		if len(webhook.RepositoriesAdded) > 0 {
+			handler.DB.InsertRepositoryAdded(installationId, webhook.RepositoriesAdded)
+		}
 	case "installation_repositories":
-		if webhook.Action == "added" {
+		switch webhook.Action {
+		case "added":
 			handler.DB.InsertRepositoryAdded(installationId, webhook.RepositoriesAdded)
 			for _, repo := range webhook.RepositoriesAdded {
-				indexed, _ := handler.DB.IsIndexed(repo.Id)
-				if !indexed {
-					//go handler.StartIndexingFlow(installationToken, &repo, repo.DefaultBranch)
-				}
+				handler.StartIndexingFlow(installationToken, &repo, webhook.Sender.Login)
 			}
 		}
-	case "push":
-		break
 	case "pull_request":
 		switch webhook.Action {
 		case "opened", "reopened":
-			prId := webhook.PullRequest.Id
-			currentSHA := webhook.PullRequest.Head.Sha
-			err := handler.DB.UpsertPullRequest(webhook)
-			if err != nil {
-				log.Printf("failed to sync PR record", err)
-				return
-			}
-
-			isIndexed, _ := handler.DB.IsPrShaIndexed(prId, currentSHA)
-			if !isIndexed {
-				go handler.StartIndexingFlow(
-					installationToken,
-					webhook.Repository,
-					webhook.PullRequest.Head.Ref,
-					prId,
-					currentSHA,
-				)
-
-			} else {
-				log.Printf("PR %d is already up-to-date at SHA %s. Skipping indexing.", webhook.PullRequest.Number, currentSHA)
-			}
-
+			// get the diff
+			//get the deletion and the addition
 			ghClient := services.GetClientFromToken(installationToken)
+			//go func(client *github.Client, wh dtos.GitHubWebhook) {
+			//	cntx := context.Background()
+			//	//pullReq, response, err := client.PullRequests.Get(
+			//	//	cntx,
+			//	//wh.Repository.Owner.Login,
+			//	//wh.Repository.Name,
+			//	//int(wh.PullRequest.Number),
+			//	//)
+			//	//if err != nil {
+			//	//	log.Printf("error %s", err.Error())
+			//	//	return
+			//	//}
+			//	//fmt.Println(pullReq.GetCommits())
+			//	comp, _, err := client.Repositories.CompareCommits(
+			//		cntx,
+			//		wh.Repository.Owner.Login,
+			//		wh.Repository.Name,
+			//		wh.PullRequest.Base.Ref,
+			//		wh.PullRequest.Head.Ref,
+			//		nil,
+			//	)
 
+			//}(ghClient, webhook)
 			go func(client *github.Client, wh dtos.GitHubWebhook) {
 				ctx := context.Background()
 
@@ -142,37 +139,8 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}(ghClient, webhook)
 
-		case "closed":
-			//if webhook.PullRequest.Merged {
-			//	fmt.Println("PR Merged! Updating base branch index...")
-			// The code is now in the main branch, trigger a re-index of the default branch
-			//go handler.StartIndexingFlow(
-			//	installationToken,
-			//	webhook.Repository,
-			//	webhook.Repository.DefaultBranch,
-			//)
 		}
-		// Update PR status in DB
-		//handler.DB.UpdatePullRequestStatus(webhook., "closed")
-		handler.DB.UpdatePullRequestStatus(webhook.PullRequest.Id, "closed")
-		break
 
-	//case "pull_request":
-	//	if webhook.Action == "closed" {
-	//		CloneRepo(installationToken, webhook.Repository.Owner.Login, webhook.Repository.Name)
-	//		return
-	//	}
-	//	if webhook.Action == "opened" {
-	//		handler.DB.InsertPullRequests(webhook)
-	//		CloneRepo(installationToken, webhook.Repository.Owner.Login, webhook.Repository.Name)
-	//		return
-	//	}
-	//	if webhook.Action == "reopened" {
-	//		fmt.Println("reopened")
-	//		handler.DB.InsertPullRequests(webhook)
-	//		CloneRepo(installationToken, webhook.Repository.Owner.Login, webhook.Repository.Name)
-	//		return
-	//	}
 	case "check_suite":
 		break
 
@@ -183,14 +151,10 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) StartIndexingFlow(
 	token string,
 	repo *dtos.Repository,
-	ref string,
-	prId int64,
-	sha string,
+	sender string,
 ) {
-	log.Printf("Starting indexing for %s (ref: %s)", repo.Name, ref)
-	_ = h.DB.UpdateRepoIndexingStatus(repo.Id, "indexing")
 
-	localPath, err := utils.CloneRepo(token, repo.Owner.Login, repo.Name, ref)
+	localPath, err := utils.CloneRepo(token, sender, repo.Name)
 	if err != nil {
 		log.Printf("Clone failed: %v", err)
 		h.DB.UpdateRepoIndexingStatus(repo.Id, "failed")
@@ -201,7 +165,7 @@ func (h *Handler) StartIndexingFlow(
 
 	chunks, err := services.CreateChunks(localPath)
 	if err != nil || len(chunks) == 0 {
-		log.Printf("Chunking failed or 0 chunks created. Error: %v", err)
+		log.Printf("Chunking failed or 0 chunks created. Error: %v", err.Error())
 		h.DB.UpdateRepoIndexingStatus(repo.Id, "failed")
 		return
 	}
@@ -213,8 +177,6 @@ func (h *Handler) StartIndexingFlow(
 		h.DB.UpdateRepoIndexingStatus(repo.Id, "failed")
 		return
 	}
-	err = h.DB.UpdatePrIndexedSha(prId, sha)
-
 	log.Printf("Indexing completed successfully for %s", repo.Name)
 	h.DB.UpdateRepoIndexingStatus(repo.Id, "completed")
 	h.DB.MarkAsIndexed(repo.Id)
