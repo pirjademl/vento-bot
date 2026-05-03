@@ -54,7 +54,7 @@ func main() {
 		log.Fatalf("Vector Service initialization failed: %v", err)
 	}
 	err = vectorService.InitCollection(context.Background())
-	//vectorService.CreateFieldIndex()
+	vectorService.CreatePayloadIndex()
 
 	if err != nil {
 		log.Fatalf("creating collection err", err)

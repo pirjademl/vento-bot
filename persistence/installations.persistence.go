@@ -26,3 +26,12 @@ func (db *Database) InsertInstallation(hook GitHubWebhook) (bool, error) {
 	return true, nil
 
 }
+
+func (db *Database) InstallationExist(installationId int64) bool {
+	installationQuery := `select 1 from installations where id=$1`
+	row := db.Client.QueryRow(context.Background(), installationQuery, installationId)
+	var exists bool
+	row.Scan(&exists)
+
+	return exists
+}
