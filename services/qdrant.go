@@ -391,3 +391,143 @@ func (vs *VectorService) SearchRelatedCode(
 
 	return finalContext, nil
 }
+func (vs *VectorService) ProvideAnswerOnComments(
+	ctx context.Context,
+	question string,
+	repoId int64,
+	previousInsights []string,
+	recentComments []string,
+) (string, error) {
+	// 1. Retrieve semantically related code from vector DB
+	retrievalContext, err := vs.SearchRelatedCode(ctx, repoId, question)
+	if err != nil {
+		return "", fmt.Errorf("failed to retrieve related code: %w", err)
+	}
+
+	systemInstruction := `You are Vento Bot, an expert Senior Staff Engineer assistant embedded in a GitHub Pull Request.
+You have access to:
+- The codebase context retrieved from a vector database
+- Previous AI-generated PR review insights
+- The recent conversation history in this PR
+
+RULES:
+- Answer the developer's question directly and concisely.
+- Always ground your answer in the provided codebase context and previous insights.
+- If the question is about a specific file or function, reference it explicitly.
+- Provide concrete code examples where applicable.
+- If you cannot find relevant context, say so clearly instead of guessing.
+- Keep the tone professional but conversational — you are in a PR comment thread.`
+
+	insightsBlock := strings.Join(previousInsights, "\n\n---\n\n")
+	commentsBlock := strings.Join(recentComments, "\n")
+
+	prompt := fmt.Sprintf(`
+### 📂 RELATED CODEBASE CONTEXT
+%s
+
+---
+
+### 🧠 PREVIOUS AI REVIEW INSIGHTS
+%s
+
+---
+
+### 💬 RECENT CONVERSATION (last 5 comments)
+%s
+
+---
+
+### ❓ DEVELOPER QUESTION
+%s
+
+---
+
+Answer the developer's question thoroughly using the context above.
+If referencing code, quote it directly. If suggesting a fix, provide a complete snippet.
+`, retrievalContext, insightsBlock, commentsBlock, question)
+
+	maxTokens := int32(4096)
+	temperature := float32(0.4) // lower temp for Q&A = more precise answers
+
+	config := &genai.GenerateContentConfig{
+		SystemInstruction: genai.NewContentFromText(systemInstruction, genai.RoleUser),
+		MaxOutputTokens:   maxTokens,
+		Temperature:       &temperature,
+	}
+
+	resp, err := vs.GeminiClient.Models.GenerateContent(
+		ctx,
+		"gemini-2.0-flash",
+		[]*genai.Content{genai.NewContentFromText(prompt, genai.RoleUser)},
+		config,
+	)
+	if err != nil {
+		return vs.ProvideAnswerOnCommentsWithGroq(
+			ctx,
+			question,
+			retrievalContext,
+			insightsBlock,
+			commentsBlock,
+		)
+	}
+
+	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+		return "", fmt.Errorf("empty response from gemini")
+	}
+
+	return resp.Candidates[0].Content.Parts[0].Text, nil
+}
+
+func (vs *VectorService) ProvideAnswerOnCommentsWithGroq(
+	ctx context.Context,
+	question string,
+	retrievalContext string,
+	insightsBlock string,
+	commentsBlock string,
+) (string, error) {
+	prompt := fmt.Sprintf(`
+### 📂 RELATED CODEBASE CONTEXT
+%s
+
+---
+
+### 🧠 PREVIOUS AI REVIEW INSIGHTS
+%s
+
+---
+
+### 💬 RECENT CONVERSATION (last 5 comments)
+%s
+
+---
+
+### ❓ DEVELOPER QUESTION
+%s
+
+---
+
+Answer the developer's question thoroughly using the context above.
+If referencing code, quote it directly. If suggesting a fix, provide a complete snippet.
+`, retrievalContext, insightsBlock, commentsBlock, question)
+
+	systemInstruction := `You are Vento Bot, an expert Senior Staff Engineer assistant embedded in a GitHub Pull Request.
+Answer questions concisely and accurately using the provided codebase context and review history.
+Always ground answers in the provided context. Provide code examples where applicable.`
+
+	completion, err := vs.GqClient.Chat.Completions.New(
+		ctx,
+		openai.ChatCompletionNewParams{
+
+			Messages: []openai.ChatCompletionMessageParamUnion{
+				openai.DeveloperMessage(systemInstruction),
+				openai.UserMessage(prompt),
+			},
+			Model: "openai/gpt-oss-120b",
+		},
+	)
+	if err != nil {
+		return "", fmt.Errorf("groq answer generation failed: %w", err)
+	}
+
+	return completion.Choices[0].Message.Content, nil
+}
