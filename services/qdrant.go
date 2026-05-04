@@ -78,12 +78,8 @@ func (vs *VectorService) CreatePayloadIndex() error {
 		cntxt,
 		&qdrant.CreateFieldIndexCollection{
 			CollectionName: "vento_vectors",
-			FieldName:      "repo_id",
-			FieldType:      qdrant.FieldType_FieldTypeInteger.Enum(),
-			FieldIndexParams: qdrant.NewPayloadIndexParamsInt(
-				&qdrant.IntegerIndexParams{
-					IsPrincipal: qdrant.PtrOf(true),
-				}),
+			FieldName:      "file_path",
+			FieldType:      qdrant.FieldType_FieldTypeText.Enum(),
 		},
 	)
 	fmt.Println(res.Status)

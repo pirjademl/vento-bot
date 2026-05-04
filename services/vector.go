@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -48,7 +49,7 @@ func CreateChunks(root string) ([]Chunk, error) {
 			return filepath.SkipDir
 		}
 		if !allowedFileExtensions[filepath.Ext(path)] {
-			log.Println("skipping this path")
+			log.Println("skipping this path", path)
 			return nil
 		}
 		filechunks, err := processFile(path, root)
@@ -259,6 +260,36 @@ func (vs *VectorService) UpsertVectors(ctx context.Context, repoID int64, chunks
 	}
 	return nil
 }
+
+func (vs *VectorService) DeleteFilePoints(
+	ctx context.Context,
+	repoID int64,
+	filePath string,
+) error {
+	result, err := vs.QDClient.Delete(ctx, &qdrant.DeletePoints{
+		CollectionName: vs.CollectionName,
+		Wait:           &wait,
+		Points: qdrant.NewPointsSelectorFilter(
+			&qdrant.Filter{
+				Must: []*qdrant.Condition{
+					qdrant.NewMatchInt("repo_id", repoID),
+					qdrant.NewMatchText("file_path", filePath),
+				},
+			},
+		),
+	})
+	if err != nil {
+		log.Printf("deleting the points failed because of %s ", err.Error())
+		return err
+	}
+	fmt.Println(result.Status)
+	return nil
+
+}
+
+func (vs *VectorService) DeleteChangedOrRemoved(changed map[string]bool, removed map[string]bool) {
+
+}
 func (vs *VectorService) GetEmbedding(ctx context.Context, text string) ([]float32, error) {
 	cntx := context.Background()
 
@@ -278,5 +309,56 @@ func (vs *VectorService) GetEmbedding(ctx context.Context, text string) ([]float
 		return nil, err
 	}
 	return res.Embeddings[0].Values, nil
+
+}
+
+func (vs *VectorService) SparseClone(
+	ctx context.Context,
+	cloneUrl string,
+	filepath []string,
+	repo string,
+	ref string,
+) (string, error) {
+	os.RemoveAll(fmt.Sprintf("vento-%s-*", repo))
+	tempDir, err := os.MkdirTemp("", fmt.Sprintf("vento-%s-*", repo))
+	if err != nil {
+		log.Print("failed to create a temp repo")
+		return "", err
+	}
+
+	command := exec.CommandContext(ctx, "git", "-C", tempDir, "remote", "add", "origin", cloneUrl)
+	if err := command.Run(); err != nil {
+		fmt.Println(err.Error())
+		log.Print("failed to add remote origin", err.Error())
+		return "", err
+	}
+
+	// configure sparse checkout
+	// use set to define exactly which files git should download
+	sparseCmd := exec.CommandContext(ctx, "git", "-C", tempDir, "sparse-checkout", "set")
+	sparseCmd.Args = append(sparseCmd.Args, filepath...)
+	if err := sparseCmd.Run(); err != nil {
+		log.Printf("spare checkout failed", err.Error())
+
+		return "", err
+	}
+
+	// pull only the required files
+	pullCmd := exec.CommandContext(
+		ctx,
+		"git",
+		"-C",
+		tempDir,
+		"pull",
+		"--depth",
+		"1",
+		"origin",
+		ref,
+	)
+	if err := pullCmd.Run(); err != nil {
+		return "", err
+	}
+
+	return tempDir, nil
 
 }

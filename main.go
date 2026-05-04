@@ -17,23 +17,7 @@ func main() {
 	log.SetFlags(log.Lshortfile | log.LstdFlags)
 
 	config.LoadEnv()
-	//	apiKey := os.Getenv("GEMINI_API_KEY")
-	//client, err := genai.NewClient(ctx, nil)
 
-	//if err != nil {
-	//		log.Fatal(err)
-	//}
-
-	//result, err := client.Models.GenerateContent(
-	//	ctx,
-	//	"gemini-3-flash-preview",
-	//	genai.Text("Explain how AI works in a few words"),
-	//	nil,
-	//)
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
-	//fmt.Println(result.Text())
 	conn, err := config.ConnectDB()
 	if err != nil {
 		log.Println(err.Error())
@@ -42,10 +26,9 @@ func main() {
 	fmt.Println(conn.IsClosed())
 	dbLayer := persistence.NewDatabase(conn)
 
-	clientId := "Iv23lipPTldsNmEpeA7O"
-	filename := "vento-bot-private-key.pem"
+	clientId := os.Getenv("CLIENT_ID")
 
-	contents, err := os.ReadFile(filename)
+	contents, err := os.ReadFile(os.Getenv("PEM_FILE_PATH"))
 	if err != nil {
 		panic(err)
 	}
@@ -66,12 +49,10 @@ func main() {
 		r = r.WithContext(context.WithValue(r.Context(), config.PemKey, contents))
 		r = r.WithContext(context.WithValue(r.Context(), config.ClientIdKey, clientId))
 		handler.WebHookHandler(w, r)
-
 	})
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "application running")
 
 	})
-
 	http.ListenAndServe(":8080", nil)
 }
