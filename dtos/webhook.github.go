@@ -10,6 +10,8 @@ type GitHubWebhook struct {
 
 	RepositoriesAdded   []Repository `json:"repositories_added,omitempty"`
 	RepositoriesRemoved []Repository `json:"repositories_removed,omitempty"`
+	Comment             *Comment     `json:"comment,omitempty"`
+	Issue               IssueDTO     `json:"issue"`
 
 	Ref     string   `json:"ref,omitempty"`
 	Before  string   `json:"before,omitempty"` // sha before commiiting
