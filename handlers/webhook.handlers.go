@@ -66,35 +66,11 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 				handler.StartIndexingFlow(installationToken, &repo, webhook.Sender.Login)
 			}
 		}
-	case "pull_request":
+	case "pull_request", "check suite":
 		switch webhook.Action {
 		case "opened", "reopened":
-			// get the diff
-			//get the deletion and the addition
 			ghClient := services.GetClientFromToken(installationToken)
-			//go func(client *github.Client, wh dtos.GitHubWebhook) {
-			//	cntx := context.Background()
-			//	//pullReq, response, err := client.PullRequests.Get(
-			//	//	cntx,
-			//	//wh.Repository.Owner.Login,
-			//	//wh.Repository.Name,
-			//	//int(wh.PullRequest.Number),
-			//	//)
-			//	//if err != nil {
-			//	//	log.Printf("error %s", err.Error())
-			//	//	return
-			//	//}
-			//	//fmt.Println(pullReq.GetCommits())
-			//	comp, _, err := client.Repositories.CompareCommits(
-			//		cntx,
-			//		wh.Repository.Owner.Login,
-			//		wh.Repository.Name,
-			//		wh.PullRequest.Base.Ref,
-			//		wh.PullRequest.Head.Ref,
-			//		nil,
-			//	)
 
-			//}(ghClient, webhook)
 			go func(client *github.Client, wh dtos.GitHubWebhook) {
 				ctx := context.Background()
 
@@ -111,7 +87,6 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				// 2. Pass the diff string to your VectorService for Gemini Analysis
 				insight, err := handler.Vector.AnalyzePR(ctx, diff, wh.PullRequest.Head.Repo.Id)
 				if err != nil {
 					log.Printf("Gemini Analysis failed: %v", err)
@@ -126,7 +101,6 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				// 3. Post the insight back to the PR as a comment
 				comment := &github.IssueComment{Body: github.Ptr(insight)}
 				_, _, err = client.Issues.CreateComment(ctx,
 					wh.Repository.Owner.Login,
@@ -141,6 +115,71 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 
 		}
 
+	case "push":
+		fmt.Println("Processing push event for sync...")
+
+		// 1. Identify changes
+		changed := make(map[string]bool)
+		removed := make(map[string]bool)
+		for _, commit := range webhook.Commits {
+			for _, file := range commit.Added {
+				changed[file] = true
+			}
+			for _, file := range commit.Modified {
+				changed[file] = true
+			}
+			for _, file := range commit.Removed {
+				removed[file] = true
+			}
+		}
+
+		ctx := context.Background()
+		ghClient := services.GetClientFromToken(installationToken)
+		repoID := webhook.Repository.Id
+		owner := webhook.Repository.Owner.Login
+		repoName := webhook.Repository.Name
+
+		// 2. Fetch changed files to a temporary directory
+		// Using webhook.After (the head SHA) ensures we get the latest code version
+		path, err := FetchChangedFiles(
+			ctx,
+			ghClient,
+			owner,
+			repoName,
+			webhook.After,
+			changed,
+		)
+		if err != nil {
+			log.Printf("Sync fetch failed: %v", err)
+			return
+		}
+		defer os.RemoveAll(path) // Cleanup /tmp after sync is finished
+
+		// 3. REUSE EXISTING FLOW: Create chunks from the temp directory
+		chunks, err := services.CreateChunks(path)
+		if err != nil {
+			log.Printf("Sync chunking failed: %v", err)
+			return
+		}
+
+		// 4. Update Vector DB: Delete stale points first, then Upsert
+		// Delete points for both Modified and Removed files
+		for file := range changed {
+			handler.Vector.DeleteFilePoints(ctx, repoID, file)
+		}
+		for file := range removed {
+			handler.Vector.DeleteFilePoints(ctx, repoID, file)
+		}
+
+		// 5. Natural order: Upsert the fresh chunks
+		if len(chunks) > 0 {
+			err = handler.Vector.UpsertVectors(ctx, repoID, chunks)
+			if err != nil {
+				log.Printf("Sync upsert failed: %v", err)
+			}
+		}
+
+		fmt.Printf("Successfully synced %d chunks for repo %d\n", len(chunks), repoID)
 	case "check_suite":
 		break
 
