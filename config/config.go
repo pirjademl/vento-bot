@@ -28,16 +28,9 @@ func ConnectDB() (*pgx.Conn, error) {
 		return nil, errors.New("env variable error")
 
 	}
-	//connstr := fmt.Sprintf(
-	//	"user=%s dbname=%s password=%s sslmode=disable",
-	//	DBUser,
-	//	DBName,
-	//	DBPASSWORD,
-	//)
-	connstr := os.Getenv("DATABASE_URL")
-	println(connstr)
 
-	//db, _ := sql.Open("postgres", connstr)
+	connstr := os.Getenv("DATABASE_URL")
+
 	db, err := pgx.Connect(context.Background(), connstr)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok {
