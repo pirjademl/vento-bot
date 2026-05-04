@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/google/go-github/v85/github"
 	"github.com/pirjademl/vento-bot/config"
@@ -87,7 +88,7 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				insight, err := handler.Vector.AnalyzePR(ctx, diff, wh.PullRequest.Head.Repo.Id)
+				aiInsight, err := handler.Vector.AnalyzePR(ctx, diff, wh.PullRequest.Head.Repo.Id)
 				if err != nil {
 					log.Printf("Gemini Analysis failed: %v", err)
 					comment := &github.IssueComment{Body: github.String(err.Error())}
@@ -101,7 +102,20 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				comment := &github.IssueComment{Body: github.Ptr(insight)}
+				//save this
+
+				insights := &dtos.Insight{
+					Body:      aiInsight,
+					RepoID:    wh.Repository.Id,
+					PrId:      wh.PullRequest.Id,
+					CommitSHA: wh.PullRequest.Head.Sha,
+				}
+				err = handler.DB.InsertInsight(insights)
+				if err != nil {
+					log.Printf("error inserting ai insight into db")
+				}
+
+				comment := &github.IssueComment{Body: github.Ptr(aiInsight)}
 				_, _, err = client.Issues.CreateComment(ctx,
 					wh.Repository.Owner.Login,
 					wh.Repository.Name,
@@ -182,6 +196,75 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("Successfully synced %d chunks for repo %d\n", len(chunks), repoID)
 	case "check_suite":
 		break
+
+	case "issue_comment":
+		switch webhook.Action {
+		case "created":
+			ctx := context.Background()
+			comment := webhook.Comment.Body
+			if strings.HasPrefix(comment, "@vento-bot") {
+				question := strings.TrimSpace(strings.TrimPrefix(comment, "@vento-bot"))
+				fmt.Println(webhook.Repository)
+
+				contents, err := handler.DB.GetInsights(
+					webhook.Repository.Id,
+					int64(webhook.Issue.Number),
+				)
+				if err != nil {
+					log.Printf("unable to get the conversation history: %v", err)
+					return
+				}
+
+				ghClient := services.GetClientFromToken(installationToken)
+
+				issueComments, _, err := ghClient.Issues.ListComments(
+					ctx,
+					webhook.Repository.Owner.Login,
+					webhook.Repository.Name,
+					webhook.Issue.Number,
+					&github.IssueListCommentsOptions{
+						ListOptions: github.ListOptions{PerPage: 5},
+					},
+				)
+				if err != nil {
+					log.Printf("unable to fetch recent comments: %v", err)
+					return
+				}
+
+				recentComments := make([]string, 0, len(issueComments))
+				for _, c := range issueComments {
+					recentComments = append(recentComments, fmt.Sprintf(
+						"@%s: %s", c.User.GetLogin(), c.GetBody(),
+					))
+				}
+
+				answer, err := handler.Vector.ProvideAnswerOnComments(
+					ctx,
+					question,
+					webhook.Repository.Id,
+					contents,
+					recentComments,
+				)
+				if err != nil {
+					log.Printf("unable to generate answer: %v", err)
+					return
+				}
+
+				// 5. Post the answer back as a GitHub comment
+				botComment := fmt.Sprintf("🤖 **Vento Bot**\n\n%s", answer)
+				_, _, err = ghClient.Issues.CreateComment(
+					ctx,
+					webhook.Repository.Owner.Login,
+					webhook.Repository.Name,
+					webhook.Issue.Number,
+					&github.IssueComment{Body: &botComment},
+				)
+				if err != nil {
+					log.Printf("unable to post bot comment: %v", err)
+					return
+				}
+			}
+		}
 
 	}
 
