@@ -13,7 +13,6 @@ type GHInstalltion struct {
 func GetInstallationToken(jwt string, installId int) (string, error) {
 
 	url := fmt.Sprintf("https://api.github.com/app/installations/%d/access_tokens", installId)
-	fmt.Println(url)
 
 	req, _ := http.NewRequest("POST", url, nil)
 	req.Header.Set("Authorization", "Bearer "+jwt)
@@ -32,12 +31,10 @@ func GetInstallationToken(jwt string, installId int) (string, error) {
 		return "", fmt.Errorf("github api error: status %d", resp.StatusCode)
 	}
 
-	// FIX 3: Decode into the struct instance, not a specific field
 	var instlToken GHInstalltion
 	if err := json.NewDecoder(resp.Body).Decode(&instlToken); err != nil {
 		return "", err
 	}
-	fmt.Println(instlToken)
 
 	return instlToken.Token, nil
 
