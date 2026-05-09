@@ -135,7 +135,78 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 
 		}
 	case "push":
-		fmt.Println("Processing push event for sync...")
+		ctx := context.Background()
+		ghClient := services.GetClientFromToken(installationToken)
+		branchName := strings.TrimPrefix(webhook.Ref, "refs/heads/")
+
+		pulls, _, err := ghClient.PullRequests.List(
+			ctx,
+			webhook.Repository.Owner.Login,
+			webhook.Repository.Name,
+			&github.PullRequestListOptions{
+				Head:  webhook.Sender.Login + ":" + branchName,
+				State: "open",
+			},
+		)
+		if err != nil {
+			log.Printf("filtering the push request with open  pr is failed  ", err.Error())
+			return
+		}
+
+		if len(pulls) == 0 {
+			return
+		}
+		openpr := pulls[0]
+
+		comparison, _, err := ghClient.Repositories.CompareCommits(ctx,
+			webhook.Repository.Owner.Login,
+			webhook.Repository.Name,
+			webhook.Before,
+			webhook.After,
+			nil,
+		)
+		if err != nil {
+			log.Printf("error comparing two commits %s", err.Error())
+			return
+		}
+		var diffBuilder strings.Builder
+		for _, file := range comparison.Files {
+			patch := file.GetPatch()
+			if patch == "" {
+				continue // no patch means no valid line numbers, skip it
+			}
+			diffBuilder.WriteString(fmt.Sprintf("--- %s\n", file.GetFilename()))
+			diffBuilder.WriteString(file.GetPatch())
+			diffBuilder.WriteString("\n")
+		}
+		incrementalDiff := diffBuilder.String()
+
+		insight, err := handler.Vector.AnalyzePR(ctx, incrementalDiff, webhook.Repository.Id)
+		if err != nil {
+			log.Printf("error getting insights about push commits %s", err.Error())
+			return
+		}
+
+		structedReview, err := handler.Vector.ExtractStructuredReview(ctx, insight, incrementalDiff)
+		if err != nil {
+			log.Printf("error comparing two commits %s", err.Error())
+			return
+		}
+		githubclient.PostStructuredReview(
+			ctx,
+			ghClient,
+			webhook.Repository.Owner.Login,
+			webhook.Repository.Name,
+			openpr.GetNumber(),
+			webhook.After,
+			structedReview,
+		)
+		defaultBranch := webhook.Repository.DefaultBranch
+
+		if branchName != defaultBranch {
+			log.Printf("push to %s is not the default branch , skipping vector sync", branchName)
+			return
+		}
 
 		// 1. Identify changes
 		changed := make(map[string]bool)
