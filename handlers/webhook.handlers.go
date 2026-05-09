@@ -13,6 +13,7 @@ import (
 	"github.com/pirjademl/vento-bot/config"
 	"github.com/pirjademl/vento-bot/dtos"
 	. "github.com/pirjademl/vento-bot/dtos"
+	githubclient "github.com/pirjademl/vento-bot/github_client"
 	"github.com/pirjademl/vento-bot/persistence"
 	"github.com/pirjademl/vento-bot/services"
 	"github.com/pirjademl/vento-bot/utils"
@@ -52,7 +53,6 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 	header := r.Header.Get("X-Github-Event")
-	fmt.Println(header)
 	switch header {
 	case "installation":
 		handler.DB.InsertInstallation(webhook)
@@ -68,14 +68,20 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	case "pull_request", "check suite":
+
 		switch webhook.Action {
+		case "closed":
+			if webhook.PullRequest.Merged {
+				// documentation update logic
+
+			}
+
 		case "opened", "reopened":
 			ghClient := services.GetClientFromToken(installationToken)
 
 			go func(client *github.Client, wh dtos.GitHubWebhook) {
 				ctx := context.Background()
 
-				// 1. Fetch the raw diff
 				opt := github.RawOptions{Type: github.Diff}
 				diff, _, err := client.PullRequests.GetRaw(ctx,
 					wh.Repository.Owner.Login,
@@ -128,7 +134,6 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 			}(ghClient, webhook)
 
 		}
-
 	case "push":
 		fmt.Println("Processing push event for sync...")
 
@@ -147,8 +152,6 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		ctx := context.Background()
-		ghClient := services.GetClientFromToken(installationToken)
 		repoID := webhook.Repository.Id
 		owner := webhook.Repository.Owner.Login
 		repoName := webhook.Repository.Name
@@ -194,6 +197,10 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		fmt.Printf("Successfully synced %d chunks for repo %d\n", len(chunks), repoID)
+		if webhook.PullRequest == nil {
+			return
+		}
+
 	case "check_suite":
 		break
 
@@ -203,8 +210,8 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 			ctx := context.Background()
 			comment := webhook.Comment.Body
 			if strings.HasPrefix(comment, "@vento-bot") {
+				// Strip the bot mention to get the actual question
 				question := strings.TrimSpace(strings.TrimPrefix(comment, "@vento-bot"))
-				fmt.Println(webhook.Repository)
 
 				contents, err := handler.DB.GetInsights(
 					webhook.Repository.Id,
@@ -231,6 +238,7 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
+				// 3. Format comments into string slice
 				recentComments := make([]string, 0, len(issueComments))
 				for _, c := range issueComments {
 					recentComments = append(recentComments, fmt.Sprintf(
@@ -242,7 +250,7 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 					ctx,
 					question,
 					webhook.Repository.Id,
-					contents,
+					contents, // []string of previous AI insights
 					recentComments,
 				)
 				if err != nil {
@@ -250,7 +258,6 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				// 5. Post the answer back as a GitHub comment
 				botComment := fmt.Sprintf("🤖 **Vento Bot**\n\n%s", answer)
 				_, _, err = ghClient.Issues.CreateComment(
 					ctx,
