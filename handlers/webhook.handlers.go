@@ -55,6 +55,7 @@ func (handler *Handler) WebHookHandler(w http.ResponseWriter, r *http.Request) {
 	header := r.Header.Get("X-Github-Event")
 	switch header {
 	case "installation":
+		log.Print("INSTALLATION EVENT ")
 		handler.DB.InsertInstallation(webhook)
 		if len(webhook.RepositoriesAdded) > 0 {
 			handler.DB.InsertRepositoryAdded(installationId, webhook.RepositoriesAdded)
