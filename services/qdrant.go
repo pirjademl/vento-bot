@@ -20,13 +20,12 @@ var limit uint64 = 5
 type VectorService struct {
 	QDClient       *qdrant.Client
 	GeminiClient   *genai.Client
-	GqClient       *openai.Client
+	GroqClient     *openai.Client
 	CollectionName string
 }
 
 func NewVectorService(collection string) (*VectorService, error) {
 	cntx := context.Background()
-
 	client, err := qdrant.NewClient(&qdrant.Config{
 		Host:          os.Getenv("QDRANT_HOST"),
 		Port:          6334,
@@ -54,7 +53,7 @@ func NewVectorService(collection string) (*VectorService, error) {
 		QDClient:       client,
 		GeminiClient:   aiClient,
 		CollectionName: collection,
-		GqClient:       &gqClient,
+		GroqClient:     &gqClient,
 	}, nil
 }
 func (vs *VectorService) InitCollection(ctx context.Context) error {
@@ -76,12 +75,26 @@ func (vs *VectorService) InitCollection(ctx context.Context) error {
 }
 func (vs *VectorService) CreatePayloadIndex() error {
 	cntxt := context.Background()
-	res, err := vs.QDClient.CreateFieldIndex(
+	fileIndexres, err := vs.QDClient.CreateFieldIndex(
 		cntxt,
 		&qdrant.CreateFieldIndexCollection{
 			CollectionName: "vento_vectors",
 			FieldName:      "file_path",
 			FieldType:      qdrant.FieldType_FieldTypeText.Enum(),
+		},
+	)
+
+	fmt.Println(fileIndexres.Status)
+	if err != nil {
+		fmt.Println(err.Error())
+
+	}
+	res, err := vs.QDClient.CreateFieldIndex(
+		cntxt,
+		&qdrant.CreateFieldIndexCollection{
+			CollectionName: "vento_vectors",
+			FieldName:      "repo_id",
+			FieldType:      qdrant.FieldType_FieldTypeInteger.Enum(),
 		},
 	)
 	fmt.Println(res.Status)
@@ -98,8 +111,6 @@ func (vs *VectorService) AnalyzePR(ctx context.Context, diff string, repoId int6
 		return "", err
 	}
 
-	//systemInstruction :=//
-
 	prompt := fmt.Sprintf(`
 Commit message and PR title are embedded in the diff below if present.
 Review this pull request using the provided codebase context.
@@ -110,6 +121,8 @@ CODEBASE CONTEXT (retrieved — most relevant existing code):
 DIFF:
 %s
 `, retrievalContext, diff)
+
+	fmt.Println("final prompt ", prompt)
 
 	maxTokens := int32(8192)
 	temperature := float32(0.2)
@@ -194,7 +207,7 @@ DIFF:
 %s
 `, retrievalContext, diff)
 
-	completion, err := vs.GqClient.Chat.Completions.New(
+	completion, err := vs.GroqClient.Chat.Completions.New(
 		ctx,
 		openai.ChatCompletionNewParams{
 			Messages: []openai.ChatCompletionMessageParamUnion{
@@ -223,6 +236,7 @@ func (vs *VectorService) SearchRelatedCode(
 	}
 
 	var limit uint64 = 5
+	fmt.Println("repo Id value ", repoID)
 
 	// 2. Query Qdrant with the strict repo_id filter
 	searchResult, err := vs.QDClient.Query(ctx, &qdrant.QueryPoints{
@@ -467,7 +481,7 @@ RULES:
 - If something is correct, say it is correct and move on. Do not pad with fake praise.
 - Minimum 800 words. Every section must be substantive.
 - Quote diff lines for every issue raised. No floating criticism without a line reference.`
-	completion, err := vs.GqClient.Chat.Completions.New(
+	completion, err := vs.GroqClient.Chat.Completions.New(
 		ctx,
 		openai.ChatCompletionNewParams{
 
@@ -593,7 +607,7 @@ REVIEW:
 
 	truncatedPrompt := truncateToTokenBudget(prompt, 20000)
 
-	completion, err := vs.GqClient.Chat.Completions.New(
+	completion, err := vs.GroqClient.Chat.Completions.New(
 		ctx,
 		openai.ChatCompletionNewParams{
 			Messages: []openai.ChatCompletionMessageParamUnion{

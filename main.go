@@ -19,9 +19,14 @@ var (
 )
 
 func main() {
+
 	log.SetFlags(log.Lshortfile | log.LstdFlags)
 
-	config.LoadEnv()
+	env := os.Getenv("APP_ENV")
+	if env == "development" || env == "" {
+		config.LoadEnv()
+	}
+
 	systemInstruction := strings.ReplaceAll(
 		os.Getenv("PULL_REQUEST_SYSTEM_INSTRUCTION"),
 		`\n`,
